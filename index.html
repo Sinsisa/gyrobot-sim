@@ -73,6 +73,11 @@
  .panel .foot{margin-top:13px;color:#718294;font-size:12px}
  body.landing #hud,body.landing #pad,body.landing #actions,body.landing #hintbar,
  body.landing #mapwrap{opacity:0;pointer-events:none;transition:opacity .3s ease}
+ body.clean #hud,body.clean #pad,body.clean #actions,body.clean #hintbar,
+ body.clean #mapwrap{opacity:0;pointer-events:none;transition:opacity .25s ease}
+ body.clean{cursor:none}
+ /* keep the scene filling the screen in fullscreen, with no letterboxing */
+ #start{transition:opacity .4s ease}
 </style>
 </head>
 <body class=landing>
@@ -106,10 +111,12 @@
   <div class=act id=btnWheel>&#9650; Expand <small>E</small></div>
   <div class=act id=btnPanels>&#9707; Panels <small>Q</small></div>
   <div class=act id=btnCam>&#9678; Chase <small>C</small></div>
+  <div class=act id=btnFull>&#9974; Full screen <small>F</small></div>
 </div>
 
 <div id=hintbar><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> drive &middot;
-  <kbd>E</kbd> wheels &middot; <kbd>Space</kbd> boost &middot; <kbd>C</kbd> camera</div>
+  <kbd>E</kbd> wheels &middot; <kbd>Space</kbd> boost &middot; <kbd>C</kbd> camera &middot;
+  <kbd>F</kbd> full screen &middot; <kbd>H</kbd> hide UI</div>
 
 <div style="position:fixed;left:-1000px;top:0">
   <input id=wheel type=range min=0 max=1 step=0.001 value=0>
@@ -127,6 +134,8 @@
       <div class=row2><kbd>E</kbd><span>expand / retract</span></div>
       <div class=row2><kbd>Space</kbd><span>boost</span></div>
       <div class=row2><kbd>C</kbd><span>camera</span></div>
+      <div class=row2><kbd>F</kbd><span>full screen</span></div>
+      <div class=row2><kbd>H</kbd><span>hide the HUD</span></div>
     </div>
     <button id=go>Play</button>
     <div class=foot>Wheels start expanded, so you can drive immediately. Press <b>E</b> to
@@ -1212,6 +1221,33 @@ function toggleWheel(){
   b.classList.toggle('on',wheelTarget>0.5);
   b.innerHTML=wheelTarget>0.5?'&#9660; Retract <small>E</small>':'&#9650; Expand <small>E</small>';
 }
+function isFull(){ return !!document.fullscreenElement || !!document.webkitFullscreenElement; }
+function toggleFull(){
+  var el=document.documentElement;
+  if(isFull()){
+    (document.exitFullscreen||document.webkitExitFullscreen||function(){}).call(document);
+  }else{
+    var req=el.requestFullscreen||el.webkitRequestFullscreen;
+    if(!req)return;
+    try{ req.call(el,{navigationUI:'hide'}); }catch(e){ req.call(el); }
+  }
+}
+function fullChanged(){
+  var b=document.getElementById('btnFull');
+  if(b)b.innerHTML = (isFull()?'&#9974; Windowed':'&#9974; Full screen')+' <small>F</small>';
+  // the browser fires resize, but make sure the projection is right immediately
+  cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix();
+  rn.setSize(innerWidth,innerHeight);
+}
+function toggleClean(){
+  document.body.classList.toggle('clean');
+  var on=document.body.classList.contains('clean');
+  var b=document.getElementById('btnClean');
+  if(b)b.classList.toggle('on',on);
+}
+document.addEventListener('fullscreenchange',fullChanged);
+document.addEventListener('webkitfullscreenchange',fullChanged);
+
 function toggleBoost(){
   boost=!boost;
   document.getElementById('btnBoost').classList.toggle('on',boost);
@@ -1252,6 +1288,8 @@ addEventListener('keydown',function(e){
   if(k===' '){toggleBoost();e.preventDefault();}
   if(k==='q')togglePanels();
   if(k==='c')cycleCam();
+  if(k==='f')toggleFull();
+  if(k==='h')toggleClean();
   if(k==='g'){showGrid=!showGrid;gridHelper.visible=showGrid;}
   if(k.indexOf('arrow')===0)e.preventDefault();
 });
@@ -1268,6 +1306,7 @@ document.getElementById('btnWheel').addEventListener('click',toggleWheel);
 document.getElementById('btnBoost').addEventListener('click',toggleBoost);
 document.getElementById('btnPanels').addEventListener('click',togglePanels);
 document.getElementById('btnCam').addEventListener('click',cycleCam);
+document.getElementById('btnFull').addEventListener('click',toggleFull);
 
 var gridHelper=new THREE.GridHelper(30000,120,0x6f8aa6,0x3a4f66);
 gridHelper.position.y=5;gridHelper.visible=false;scene.add(gridHelper);
