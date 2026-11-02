@@ -129,8 +129,8 @@
       <div class=row2><kbd>C</kbd><span>camera</span></div>
     </div>
     <button id=go>Play</button>
-    <div class=foot>Closed, the chassis rests on the floor and the tread spins clear &mdash;
-      there is no traction until the wheels open.</div>
+    <div class=foot>Wheels start expanded, so you can drive immediately. Press <b>E</b> to
+      retract them &mdash; closed, the chassis rests on the floor and the tread spins clear.</div>
   </div>
 </div>
 
@@ -867,15 +867,34 @@ blobShadow.rotation.x=-Math.PI/2;scene.add(blobShadow);
 var RIG=null,objs=[],pickables=[],pivots={},mats={},done=0,total=0,ready=false;
 var loader=new THREE.STLLoader();
 
+// The published build ships the meshes gzipped - about a third of the bytes and
+// bit-identical geometry. rig.json carries "compressed": true in that build; the
+// local repository keeps plain .stl files. The gzip magic bytes are checked
+// rather than the response headers, because a host may or may not decode for us.
 function loadArrays(url){
-  return new Promise(function(res,rej){
-    loader.load(url,function(g){
-      g.computeVertexNormals();
-      var p=g.attributes.position.array,n=g.attributes.normal.array;g.dispose();
-      res({pos:p,nrm:n});
-    },undefined,function(){rej(new Error(url));});
+  var gz = !!(RIG && RIG.compressed);
+  var target = gz ? url + '.gz' : url;
+  return fetch(target).then(function(r){
+    if(!r.ok) throw new Error(target + ' -> ' + r.status);
+    return r.arrayBuffer();
+  }).then(function(raw){
+    var head = new Uint8Array(raw, 0, Math.min(2, raw.byteLength));
+    var isGzip = head.length === 2 && head[0] === 0x1f && head[1] === 0x8b;
+    if(!isGzip) return raw;                       // host already decoded it
+    if(!('DecompressionStream' in window))
+      throw new Error('this browser cannot decompress gzip');
+    return new Response(
+      new Blob([raw]).stream().pipeThrough(new DecompressionStream('gzip'))
+    ).arrayBuffer();
+  }).then(function(buf){
+    var g = loader.parse(buf);
+    g.computeVertexNormals();
+    var p = g.attributes.position.array, n = g.attributes.normal.array;
+    g.dispose();
+    return {pos: p, nrm: n};
   });
 }
+
 function bboxOf(a){
   var lo=[1e9,1e9,1e9],hi=[-1e9,-1e9,-1e9];
   for(var i=0;i<a.length;i+=3)for(var k=0;k<3;k++){var v=a[i+k];if(v<lo[k])lo[k]=v;if(v>hi[k])hi[k]=v;}
@@ -921,7 +940,7 @@ function applyIndex(o,f){
 }
 
 // ============================================================ state
-var strokeFrac=0, wheelTarget=0, frontDeg=0, backDeg=0, panelsOpen=false;
+var strokeFrac=1, wheelTarget=1, frontDeg=0, backDeg=0, panelsOpen=false;
 var boost=false, camMode=0;
 var speed=0, heading=Math.PI, posX=0, posZ=8600, wheelAngle=0, steer=0;
 var trip=0, follow=true, showGrid=false, keys={};
@@ -1004,6 +1023,12 @@ function clipCamera(px,pz,dirX,dirZ,want){
 }
 
 // ============================================================ HUD + minimap
+function progress(){
+  var b=document.getElementById('go');
+  if(!b||document.getElementById('start').classList.contains('gone'))return;
+  var pct=total?Math.round(100*done/total):0;
+  b.textContent = started ? 'Loading\u2026 '+pct+'%' : 'Play \u00b7 '+pct+'% loaded';
+}
 var fEl=document.getElementById('sf'),bEl=document.getElementById('sb'),
     tEl=document.getElementById('traction'),readEl=document.getElementById('read'),
     roomEl=document.getElementById('roomname');
@@ -1294,7 +1319,9 @@ fetch('data/rig.json').then(function(r){return r.json();}).then(function(rig){
         if(o.panel==='front')mount='panel_front';
         attach(node,mount,bboxOf(poses[0].pos).c);
         objs.push(node);pickables.push(node.userData.mesh);
-        done+=o.files.length;statEl.textContent='loading '+done+' / '+total+' meshes';
+        done+=o.files.length;
+        statEl.textContent='loading '+done+' / '+total+' meshes';
+        progress();
       }).catch(function(e){done+=o.files.length;
         statEl.textContent='loading '+done+' / '+total+' (failed: '+e.message+')';});
     });
@@ -1306,9 +1333,11 @@ fetch('data/rig.json').then(function(r){return r.json();}).then(function(rig){
       var v=rig.poses.wheel.values;
       strokeFrac=Math.max(0,Math.min(1,(parseFloat(Q.stroke)-v[0])/(v[v.length-1]-v[0])));
       wheelTarget=strokeFrac;
-      document.getElementById('wheel').value=strokeFrac;
-      document.getElementById('btnWheel').classList.toggle('on',strokeFrac>0.5);
     }
+    document.getElementById('wheel').value=strokeFrac;
+    document.getElementById('btnWheel').classList.toggle('on',wheelTarget>0.5);
+    document.getElementById('btnWheel').innerHTML =
+      (wheelTarget>0.5?'&#9660; Retract <small>E</small>':'&#9650; Expand <small>E</small>');
     updatePoseMeshes();
     follow=(Q.follow!=='0');camMode=0;
     ctl.enabled=!follow;
