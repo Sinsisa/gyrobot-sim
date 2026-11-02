@@ -1,0 +1,392 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Gyrobot P1B1 rig</title>
+<style>
+ body{margin:0;background:#0b0f14;color:#dfe6ee;font:13px system-ui;overflow:hidden}
+ #ui{position:fixed;top:10px;left:10px;background:#151b23ee;padding:10px 11px;border-radius:10px;
+     z-index:10;width:348px;max-height:calc(100vh - 18px);overflow:auto;border:1px solid #26303c}
+ h1{font-size:13px;margin:0 0 8px;letter-spacing:.3px}
+ h2{font-size:10.5px;text-transform:uppercase;letter-spacing:.8px;color:#7f8fa3;
+    margin:11px 0 5px;border-bottom:1px solid #26303c;padding-bottom:3px}
+ label{display:block;margin:6px 0 2px;color:#c6d2e0}
+ label .v{color:#fff;font-variant-numeric:tabular-nums}
+ input[type=range]{width:100%}
+ .row{display:flex;gap:8px;align-items:center;margin-top:6px;color:#9fb0c3}
+ .row input[type=checkbox]{margin:0}
+ #stat{color:#7fd1a3;margin-top:8px;font-size:12px}
+ #read{color:#c9d6e4;font-size:12px;line-height:1.5;margin-top:4px;font-variant-numeric:tabular-nums}
+ #read b{color:#fff}
+ #part{color:#fbbf24;font-size:12px;margin-top:4px;min-height:16px}
+ #chain{color:#93a4b8;font-size:11.5px;line-height:1.45;margin-top:6px;
+        border-left:2px solid #2b3745;padding-left:8px}
+ #legend{display:grid;grid-template-columns:1fr 1fr;gap:1px 6px}
+ .leg{display:flex;align-items:center;gap:5px;padding:1px 3px;border-radius:4px;cursor:pointer;
+      color:#cbd6e2;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ .leg:hover{background:#1e2732}
+ .leg.off{opacity:.35}
+ .sw{width:11px;height:11px;border-radius:3px;flex:0 0 auto;box-shadow:0 0 0 1px #0006 inset}
+ .leg .n{margin-left:auto;color:#7f8fa3;font-size:11px}
+ #err{position:fixed;bottom:8px;left:10px;right:10px;color:#ff9b9b;font-family:monospace;
+      white-space:pre-wrap;font-size:12px}
+</style>
+</head>
+<body>
+<div id=ui>
+  <h1>Gyrobot P1B1 &mdash; kinematic rig</h1>
+
+  <h2>Pose</h2>
+  <label>Coupler stroke <span class=v id=sv>&minus;2.0</span> mm</label>
+  <input id=wheel type=range min=0 max=1 step=0.001 value=0>
+  <label>Door hinge <span class=v id=dv>0</span>&deg;</label>
+  <input id=door type=range min=0 max=1 step=0.001 value=0>
+  <div class=row><input id=blend type=checkbox checked><span>blend between pose meshes</span></div>
+
+  <h2>Driving</h2>
+  <div class=row><input id=drive type=checkbox><span>roll on the ground</span></div>
+  <label>Speed <span class=v id=vv>0</span> mm/s</label>
+  <input id=speed type=range min=0 max=400 step=1 value=120>
+  <div class=row><input id=breathe type=checkbox><span>auto-expand while driving</span></div>
+
+  <div id=stat>loading&hellip;</div>
+  <div id=read></div>
+  <div id=part></div>
+  <div id=chain>
+    <b>Expansion:</b> stepper &rarr; 13T gear &rarr; 41 mm rack &rarr; coupler &rarr; disc &rarr; 6 links &rarr; arcs slide out.<br>
+    <b>Drive:</b> N20 &rarr; 30T pinion &rarr; 144T ring gear (4.8:1) &rarr; wheel.
+  </div>
+
+  <h2>Colour by part &mdash; click to hide</h2>
+  <div id=legend></div>
+</div>
+<div id=err></div>
+
+<script src="vendor/three.min.js"></script>
+<script src="vendor/STLLoader.js"></script>
+<script src="vendor/OrbitControls.js"></script>
+<script>
+var errEl=document.getElementById('err'),statEl=document.getElementById('stat'),
+    readEl=document.getElementById('read'),partEl=document.getElementById('part');
+function fail(m){errEl.textContent=String(m);statEl.textContent='error';}
+window.onerror=function(m){fail('error: '+m);};
+
+if(typeof THREE==='undefined'){
+  fail('three.js did not load. Expected gyrobot-p1b1-rig/vendor/three.min.js next to this file.');
+}else{
+try{
+// ---------------------------------------------------------------- query params
+// ?stroke=10&door=0&drive=1&speed=180&ui=0&spin=40&blend=0&breath=1
+var Q={};location.search.replace(/[?&]([^=&]+)=([^&]*)/g,function(_,k,v){Q[k]=decodeURIComponent(v);});
+var hideUI=Q.ui==='0';
+
+if(THREE.ColorManagement){THREE.ColorManagement.legacyMode=false;}  // CSS colours are sRGB
+var scene=new THREE.Scene();scene.background=new THREE.Color(0x0b0f14);
+var cam=new THREE.PerspectiveCamera(42,innerWidth/innerHeight,0.5,20000);
+var rn=new THREE.WebGLRenderer({antialias:true,preserveDrawingBuffer:true});
+rn.setPixelRatio(Math.min(devicePixelRatio,2));rn.setSize(innerWidth,innerHeight);
+rn.outputEncoding=THREE.sRGBEncoding;rn.toneMapping=THREE.ACESFilmicToneMapping;
+rn.toneMappingExposure=0.86;
+document.body.appendChild(rn.domElement);
+var ctl=new THREE.OrbitControls(cam,rn.domElement);
+ctl.enableDamping=true;ctl.dampingFactor=0.08;
+
+scene.add(new THREE.HemisphereLight(0xb9c6d6,0x10161d,1.05));
+var key=new THREE.DirectionalLight(0xffffff,2.35);key.position.set(300,-420,240);scene.add(key);
+var fill=new THREE.DirectionalLight(0x9fb6ff,0.75);fill.position.set(-260,180,-180);scene.add(fill);
+var riml=new THREE.DirectionalLight(0xffd9a0,0.55);riml.position.set(-120,260,320);scene.add(riml);
+
+// ---------------------------------------------------------------- ground (scrolls under the robot)
+var GRID_SPACING=50;
+var ground=new THREE.Group();
+var grid=new THREE.GridHelper(2400,2400/GRID_SPACING,0x6f8aa6,0x3a4f66);
+grid.material.transparent=true;grid.material.opacity=0.75;ground.add(grid);
+var plane=new THREE.Mesh(new THREE.PlaneGeometry(2400,2400),
+  new THREE.MeshBasicMaterial({color:0x151d27,transparent:true,opacity:0.9,side:THREE.FrontSide}));
+plane.rotation.x=-Math.PI/2;plane.position.y=-0.08;ground.add(plane);
+scene.add(ground);
+
+// ---------------------------------------------------------------- state
+var RIG=null,robot=new THREE.Group(),objs=[],pickables=[];
+var pivots={},mats={},done=0,total=0,ready=false;
+var angle=0,breathePhase=0;
+scene.add(robot);
+
+var loader=new THREE.STLLoader();
+function loadArrays(url){
+  return new Promise(function(res,rej){
+    loader.load(url,function(geo){
+      geo.computeVertexNormals();                 // non-indexed STL -> flat normals
+      var p=geo.attributes.position.array, n=geo.attributes.normal.array;
+      geo.dispose();res({pos:p,nrm:n});
+    },undefined,function(){rej(new Error(url));});
+  });
+}
+function bboxOf(arr){
+  var lo=[1e9,1e9,1e9],hi=[-1e9,-1e9,-1e9];
+  for(var i=0;i<arr.length;i+=3){
+    for(var a=0;a<3;a++){var v=arr[i+a];if(v<lo[a])lo[a]=v;if(v>hi[a])hi[a]=v;}
+  }
+  return {lo:lo,hi:hi,c:[(lo[0]+hi[0])/2,(lo[1]+hi[1])/2,(lo[2]+hi[2])/2]};
+}
+
+// ---------------------------------------------------------------- objects
+function materialFor(o){
+  if(!mats[o.role]){
+    mats[o.role]=new THREE.MeshStandardMaterial({
+      color:new THREE.Color(o.color),metalness:0.10,roughness:0.62,
+      side:THREE.DoubleSide,emissive:new THREE.Color(0x000000)});
+  }
+  return mats[o.role];
+}
+
+function makeObject(o,poses){
+  var geo=new THREE.BufferGeometry();
+  geo.setAttribute('position',new THREE.BufferAttribute(poses[0].pos.slice(),3));
+  geo.setAttribute('normal',new THREE.BufferAttribute(poses[0].nrm.slice(),3));
+  geo.computeBoundingBox();geo.computeBoundingSphere();
+  var mesh=new THREE.Mesh(geo,materialFor(o));
+  mesh.userData.entry=o;
+  var node=new THREE.Object3D();
+  node.add(mesh);
+  node.userData={poses:poses,geo:geo,mesh:mesh,group:o.group,mount:o.mount,role:o.role};
+  return node;
+}
+
+// A pivot rotates its children about an axis through pivot.position; the mesh is
+// translated by the negative of that so the world-space geometry stays put at rest.
+function attach(node,mount,centre){
+  var px=0,py=0,pz=0;
+  if(mount==='wheel1'||mount==='wheel2'){px=py=pz=0;}            // axle = x through origin
+  else if(mount==='pinion1'||mount==='pinion2'){py=centre[1];pz=centre[2];}
+  else if(mount==='stepper'){px=centre[0];py=centre[1];pz=centre[2];}
+  var holder=robot;
+  if(mount!=='body'){
+    if(!pivots[mount]){
+      var p=new THREE.Object3D();p.position.set(px,py,pz);
+      robot.add(p);pivots[mount]=p;
+    }
+    holder=pivots[mount];
+  }
+  node.userData.mesh.position.set(-px,-py,-pz);
+  holder.add(node);
+}
+
+// wheel objects are baked in world space about the axle, so their pivot sits at the
+// origin and needs only the rotation; pinion and stepper get a pivot at their centre.
+
+function applyIndex(o,f){
+  var s=o.userData,poses=s.poses;
+  if(poses.length<2)return;
+  var n=poses.length,i=Math.min(Math.floor(f),n-2),t=f-i;
+  if(!document.getElementById('blend').checked){i=(t<0.5)?i:i+1;t=0;}
+  var A=poses[i],B=poses[Math.min(i+1,n-1)];
+  var geo=s.geo,pa=geo.attributes.position.array,na=geo.attributes.normal.array;
+  var ap=A.pos,bp=B.pos,an=A.nrm,bn=B.nrm;
+  for(var k=0;k<pa.length;k++){
+    pa[k]=ap[k]+(bp[k]-ap[k])*t;na[k]=an[k]+(bn[k]-an[k])*t;
+  }
+  geo.attributes.position.needsUpdate=true;geo.attributes.normal.needsUpdate=true;
+  geo.computeBoundingSphere();
+}
+
+// ---------------------------------------------------------------- legend
+function buildLegend(){
+  var host=document.getElementById('legend');host.innerHTML='';
+  var roles=RIG.roles,keys=Object.keys(roles);
+  keys.sort(function(a,b){return (roles[b].count||0)-(roles[a].count||0);});
+  keys.forEach(function(k){
+    var r=roles[k];if(!r.count)return;
+    var d=document.createElement('div');d.className='leg';
+    d.innerHTML='<span class=sw style="background:'+r.color+'"></span><span>'+r.label+
+                '</span><span class=n>'+r.count+'</span>';
+    if(r.note)d.title=r.note;
+    d.onclick=function(){
+      var off=!d.classList.contains('off');
+      d.classList.toggle('off',off);
+      objs.forEach(function(o){if(o.userData.role===k)o.visible=!off;});
+    };
+    host.appendChild(d);
+  });
+}
+
+// ---------------------------------------------------------------- pose metrics
+function poseFrac(kind){return parseFloat(document.getElementById(kind).value)*(RIG.poses[kind].values.length-1);}
+function lerp(a,b,t){return a+(b-a)*t;}
+function poseMetric(kind,f){
+  var vals=RIG.poses[kind].values,n=vals.length;
+  var i=Math.min(Math.floor(f),n-2),t=f-i;
+  var A=RIG.checks.poses[kind][String(vals[i])],B=RIG.checks.poses[kind][String(vals[i+1])];
+  if(!A||!B)return null;
+  return {tread:lerp(A.tread_radius_mm,B.tread_radius_mm,t),
+          outer:lerp(A.max_radius_mm,B.max_radius_mm,t),
+          lowest:lerp(A.lowest_y,B.lowest_y,t),
+          diam:lerp(A.diameter_mm,B.diameter_mm,t),
+          stroke:lerp(vals[i],vals[i+1],t)};
+}
+
+function stepperDegFor(dt,stroke){
+  return dt.stepperDegForFullStroke*(stroke-dt.strokeRangeMm[0])/
+         (dt.strokeRangeMm[1]-dt.strokeRangeMm[0]);
+}
+
+function updateStatic(){
+  if(!RIG||!ready)return;
+  var fw=poseFrac('wheel'),fd=poseFrac('door');
+  var wv=RIG.poses.wheel.values,dvn=RIG.poses.door.values;
+  document.getElementById('sv').textContent=wv[Math.round(fw)].toFixed(1);
+  document.getElementById('dv').textContent=dvn[Math.round(fd)].toFixed(0);
+  for(var k=0;k<objs.length;k++){
+    var o=objs[k];
+    if(o.userData.group==='wheel')applyIndex(o,fw);
+    else if(o.userData.group==='door')applyIndex(o,fd);
+  }
+  var m=poseMetric('wheel',fw),dt=RIG.drivetrain;
+  var bodyY=RIG.checks.body_lowest_y;        // lowest point of the non-spinning structure
+  var below=m.outer-(bodyY<0?-bodyY:0);      // negative: chassis dips below the tread circle
+  var rpm=0;
+  if(document.getElementById('drive').checked){
+    rpm=parseFloat(document.getElementById('speed').value)/(2*Math.PI*m.tread)*60;
+  }
+  readEl.innerHTML=
+    'wheel OD <b>'+m.diam.toFixed(1)+'</b> mm &middot; tread circle r <b>'+m.outer.toFixed(2)+'</b> mm &middot; contact r <b>'+m.tread.toFixed(2)+'</b> mm'+
+    (document.getElementById('drive').checked?' &middot; travelled <b>'+
+      (angle*m.outer/10).toFixed(1)+'</b> cm':'')+'<br>'+
+    (below<0
+      ? '<span style="color:#ffb4a2">chassis sits '+(-below).toFixed(1)+
+        ' mm below the tread circle as modelled</span>'
+      : 'chassis clears the tread circle by '+(below).toFixed(1)+' mm')+
+    '<br>stepper <b>'+stepperDegFor(dt,m.stroke).toFixed(0)+'&deg;</b> at this stroke'+
+    (rpm>0?' &middot; wheel <b>'+rpm.toFixed(0)+' rpm</b> &middot; pinion <b>'+
+      (rpm*dt.pinionToRing).toFixed(0)+' rpm</b> ('+dt.pinionToRing.toFixed(1)+':1)':'');
+}
+
+function updateDrive(dt){
+  if(!RIG||!ready)return;
+  var driving=document.getElementById('drive').checked;
+  if(driving&&document.getElementById('breathe').checked){
+    breathePhase+=dt*0.5;
+    document.getElementById('wheel').value=(0.5-0.5*Math.cos(breathePhase)).toFixed(4);
+    updateStatic();
+  }
+  var m=poseMetric('wheel',poseFrac('wheel'));
+  if(driving){
+    var spd=parseFloat(document.getElementById('speed').value);
+    angle+=spd*dt/m.outer;                     // rolling without slip on the tread circle
+  }
+  ['wheel1','wheel2'].forEach(function(k){if(pivots[k])pivots[k].rotation.x=angle;});
+  var dt2=RIG.drivetrain;
+  ['pinion1','pinion2'].forEach(function(k){
+    if(pivots[k])pivots[k].rotation.x=angle*dt2.pinionToRing;   // internal ring: same way, 4.8x
+  });
+  if(pivots['stepper']){
+    pivots['stepper'].rotation.y=-stepperDegFor(dt2,m.stroke)*Math.PI/180;
+  }
+  robot.position.y=m.tread;                    // axle one tread radius above the ground
+  ground.position.z=-((angle*m.outer)%50);      // ground scrolls under it
+  document.getElementById('vv').textContent=driving?document.getElementById('speed').value:'0';
+}
+
+// ---------------------------------------------------------------- picking
+var ray=new THREE.Raycaster(),pointer=new THREE.Vector2(),hovered=null;
+addEventListener('pointermove',function(e){
+  pointer.x=(e.clientX/innerWidth)*2-1;pointer.y=-(e.clientY/innerHeight)*2+1;
+  ray.setFromCamera(pointer,cam);
+  var hit=ray.intersectObjects(pickables,false)[0];
+  if(hovered&&(!hit||hit.object!==hovered)){
+    hovered.material.emissive.setHex(0x000000);hovered=null;partEl.textContent='';
+  }
+  if(hit&&hit.object!==hovered){
+    hovered=hit.object;hovered.material.emissive.setHex(0x2b3646);
+    var o=hovered.userData.entry;
+    partEl.textContent=o.name+'  \u2014  '+(RIG.roles[o.role]||{label:o.role}).label;
+  }
+});
+
+// ---------------------------------------------------------------- camera
+function fit(){
+  if(!ready)return;
+  var box=new THREE.Box3();
+  objs.forEach(function(o){if(o.visible)box.expandByObject(o);});
+  if(box.isEmpty())return;
+  var c=box.getCenter(new THREE.Vector3());
+  var r=box.getBoundingSphere(new THREE.Sphere()).radius;
+  var fov=THREE.MathUtils.degToRad(Math.min(cam.fov,cam.fov*cam.aspect));
+  var dist=r/Math.sin(fov*0.5)*1.25;
+  var dir=new THREE.Vector3(0.86,0.40,0.56).normalize();
+  var az=(parseFloat(Q.orbit)||0)*Math.PI/180;             // turntable, for renders
+  if(az){var dx=dir.x*Math.cos(az)-dir.z*Math.sin(az),dz=dir.x*Math.sin(az)+dir.z*Math.cos(az);
+         dir.x=dx;dir.z=dz;}
+  ctl.target.set(c.x,c.y,c.z);
+  cam.position.copy(ctl.target).addScaledVector(dir,dist);
+  cam.near=Math.max(0.5,dist/500);cam.far=dist*8;
+  cam.updateProjectionMatrix();ctl.update();
+}
+
+// ---------------------------------------------------------------- load
+fetch('data/rig.json').then(function(r){return r.json();}).then(function(rig){
+  RIG=rig;
+  rig.objects.forEach(function(o){total+=o.files.length;});
+  statEl.textContent='loading 0 / '+total+' meshes';
+  var heavy=[],light=[];
+  rig.objects.forEach(function(o){(o.tris>60000?heavy:light).push(o);});
+  if(hideUI)document.getElementById('ui').style.display='none';
+  buildLegend();
+
+  function loadSet(list,cb){
+    var jobs=list.map(function(o){
+      return Promise.all(o.files.map(loadArrays)).then(function(poses){
+        var node=makeObject(o,poses);
+        attach(node,o.mount,bboxOf(poses[0].pos).c);
+        objs.push(node);pickables.push(node.userData.mesh);
+        done+=o.files.length;
+        statEl.textContent='loading '+done+' / '+total+' meshes';
+      }).catch(function(e){done+=o.files.length;
+        statEl.textContent='loading '+done+' / '+total+' (some failed: '+e.message+')';});
+    });
+    Promise.all(jobs).then(cb);
+  }
+  loadSet(light,function(){
+    ready=true;fit();updateStatic();
+    loadSet(heavy,function(){
+      fit();updateStatic();statEl.textContent='ready \u2014 '+objs.length+' objects';
+    });
+  });
+
+  // URL overrides, so renders are reproducible
+  if(Q.stroke!==undefined){
+    var v=rig.poses.wheel.values;
+    document.getElementById('wheel').value=
+      Math.max(0,Math.min(1,(parseFloat(Q.stroke)-v[0])/(v[v.length-1]-v[0]))).toFixed(4);
+  }
+  if(Q.door!==undefined)document.getElementById('door').value=(parseFloat(Q.door)/60).toFixed(4);
+  if(Q.spin!==undefined)angle=parseFloat(Q.spin)*Math.PI/180;
+  if(Q.drive==='1')document.getElementById('drive').checked=true;
+  if(Q.speed!==undefined)document.getElementById('speed').value=Q.speed;
+  if(Q.blend==='0')document.getElementById('blend').checked=false;
+  if(Q.breath==='1')document.getElementById('breathe').checked=true;
+}).catch(function(e){
+  fail('data/rig.json: '+e+'\nServe this folder over HTTP (python -m http.server) - fetch() is blocked on file://');
+});
+
+document.getElementById('wheel').oninput=updateStatic;
+document.getElementById('door').oninput=updateStatic;
+document.getElementById('blend').onchange=updateStatic;
+
+addEventListener('resize',function(){
+  cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix();rn.setSize(innerWidth,innerHeight);
+});
+
+var clock=new THREE.Clock();
+(function loop(){
+  requestAnimationFrame(loop);
+  var dt=Math.min(clock.getDelta(),0.05);
+  updateDrive(dt);
+  ctl.update();
+  rn.render(scene,cam);
+})();
+}catch(e){fail('init: '+e.message);}
+}
+</script>
+</body>
+</html>
