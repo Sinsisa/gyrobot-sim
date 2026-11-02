@@ -925,7 +925,7 @@ var strokeFrac=0, wheelTarget=0, frontDeg=0, backDeg=0, panelsOpen=false;
 var boost=false, camMode=0;
 var speed=0, heading=Math.PI, posX=0, posZ=8600, wheelAngle=0, steer=0;
 var trip=0, follow=true, showGrid=false, keys={};
-var landing=true, landAng=0.05;
+var landing=true, landAng=0.05, started=false;
 (function(){
   var m=/[?&]pos=(-?[0-9.]+),(-?[0-9.]+)/.exec(location.search);
   if(m){posX=parseFloat(m[1]);posZ=parseFloat(m[2]);}
@@ -1258,13 +1258,22 @@ addEventListener('pointermove',function(e){
   }
 });
 
-document.getElementById('go').onclick=function(){
+function beginPlay(){
   landing=false;
   document.getElementById('start').classList.add('gone');
   document.body.classList.remove('landing');
   follow=true;camMode=0;ctl.enabled=false;
   document.getElementById('btnCam').innerHTML='&#9678; Chase <small>C</small>';
   snapCam();
+}
+document.getElementById('go').onclick=function(){
+  started=true;
+  if(!ready){
+    this.textContent='Loading\u2026';
+    this.disabled=true;
+    return;
+  }
+  beginPlay();
 };
 addEventListener('resize',function(){
   cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix();rn.setSize(innerWidth,innerHeight);
@@ -1313,11 +1322,11 @@ fetch('data/rig.json').then(function(r){return r.json();}).then(function(rig){
       cam.position.set(posX+Math.sin(az)*d,h,posZ+Math.cos(az)*d);
       ctl.target.set(posX,300,posZ);ctl.update();
     }else if(follow)snapCam();
-    if(Q.start==='1'){
-    landing=false;
-    document.getElementById('start').classList.add('gone');
-    document.body.classList.remove('landing');
-    snapCam();
+    if(Q.start==='1')started=true;
+  if(started){
+    var goBtn=document.getElementById('go');
+    goBtn.disabled=false;goBtn.textContent='Play';
+    beginPlay();
   }else{
     landing=true;
     follow=false;ctl.enabled=false;
